@@ -1,3 +1,5 @@
+global Shapelet_length, Number_of_shapelets
+
 ### Helper function for computing our transformation 
 #For shapelets that are not flat, we first compute correlation
 #of the given shape with the shapelet. Operation is commutative
