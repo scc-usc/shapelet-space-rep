@@ -1,6 +1,6 @@
 
 Shapelet_length = 4 # number of weeks ahead
-Number_of_shapelets = 3 # number of shapelets to consider
+Number_of_shapelets = 4 # number of shapelets to consider
 shapelet_array = [[0]*Shapelet_length for w in range(Number_of_shapelets)]
 shapelet_names = ["Inc", "Peak", "Flat","Dec"] 
 
