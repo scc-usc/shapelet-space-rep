@@ -1,3 +1,14 @@
+from numpy import corrcoef as pcor
+from numpy import exp
+from numpy import mean
+from numpy import log
+import random
+import numpy as np
+import math
+import pandas as pd
+from numpy import diff
+from scipy.interpolate import interp1d
+
 global Shapelet_length, Number_of_shapelets
 
 ### Helper function for computing our transformation 
