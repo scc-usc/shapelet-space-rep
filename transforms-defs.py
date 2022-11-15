@@ -123,3 +123,15 @@ def shapelet_space_representation_prob(quant_forecast, slope_thres = 0.0005, typ
   for i in range(0,len(coords)):
     coords[i] = coords[i]/num_shapes
   return coords
+
+### Takes a time-series and finds the shapelet space representations
+# with a rolling window. The output is a multi-variate time-series
+# of the same length encoding the shapes in the time-series. 
+def find_shapelet_space_ts(time_series, slope_thres = 0.0005):
+    reps = [[np.nan]*(len(time_series))]*len(shapelet_names)
+    reps = np.array(reps)
+    for i in range(0,len(time_series)-Shapelet_length+1):
+        this_shape = time_series[i:i+Shapelet_length]
+        this_rep = shapelet_space_representation(this_shape, slope_thres)
+        reps[:, i] = this_rep
+    return reps 
