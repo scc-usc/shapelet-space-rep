@@ -69,7 +69,7 @@ def dtw_cons_md(t, r, win=np.inf, dist_metric='eu'):
     w = w[k:, :]
     w1, w2 = w[:, 0], w[:, 1]
 
-    return Dist, w1, w2
+    return Dist
 
 
 
