@@ -9,7 +9,7 @@ import pandas as pd
 from numpy import diff
 from scipy.interpolate import interp1d
 from scipy.spatial.distance import cosine
-from config import *
+from .config import *
 
 
 global Shapelet_length, Number_of_shapelets
