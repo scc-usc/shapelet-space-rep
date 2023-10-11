@@ -1,5 +1,3 @@
-addpath('../shapelet_space_matlab/');
-
 dd = csvread("flu_sims.csv");
 %%
 plot(dd', 'Color', [0 0 1 0.2]); hold on;
