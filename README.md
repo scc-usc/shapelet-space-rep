@@ -11,7 +11,8 @@ https://arxiv.org/pdf/2209.04035.pdf (accepted at IEEE BigData 2022)
 pip install shapelet-space
 ```
 
-## Function Descriptions### Shapelet Transformation
+## Function Descriptions
+### Shapelet Transformation
 The main component for shapelet transformation is the ShapeletSpace class:
 
 ### find_shapelet_space_ts
