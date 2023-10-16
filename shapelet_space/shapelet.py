@@ -110,4 +110,8 @@ class ShapeletSpace:
             this_shape = time_series[i:i + self.Shapelet_length]
             this_rep = self.shapelet_space_representation(this_shape, slope_thres)
             reps[:, i] = this_rep
+        nan_mask = np.isnan(reps)
+        idx = np.where(~nan_mask, np.arange(nan_mask.shape[1]), 0)
+        np.maximum.accumulate(idx, axis=1, out=idx)
+        reps[nan_mask] = reps[np.nonzero(nan_mask)[0], idx[nan_mask]]
         return reps
