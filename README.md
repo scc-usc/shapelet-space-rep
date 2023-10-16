@@ -14,6 +14,19 @@ pip install shapelet-space
 ## Usage
 ### Shapelet Transformation
 The main component for shapelet transformation is the ShapeletSpace class:
+## Function Descriptions
+
+### find_shapelet_space_ts
+
+- **Description**: This function finds shapelets in your time series data.
+- **Usage**:
+    ```python
+    find_shapelet_space_ts(time_series, flatness_param)
+    ```
+- **Parameters**:
+    - `time_series`: Your input data.
+    - `flatness_param`: A threshold used during shapelet discovery.
+- ** Example
 ```python
 from shapelet_space import ShapeletSpace
 
