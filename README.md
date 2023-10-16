@@ -12,8 +12,6 @@ pip install shapelet-space
 ```
 
 ## Function Descriptions
-- ### Shapelet Transformation
-The main component for shapelet transformation is the ShapeletSpace class:
 
 ### find_shapelet_space_ts
 
