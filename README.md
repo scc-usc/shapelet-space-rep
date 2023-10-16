@@ -32,6 +32,9 @@ shapelet_transformer = ShapeletSpace()
 # Define your time series data
 time_series = [/* your time series data here */]
 
+# Set a flatness parameter
+flatness_param = 100000  # for example
+
 # Generate the shapelet space representation of the time series
-reps = shapelet_transformer.find_shapelet_space_ts(time_series)
+reps = shapelet.find_shapelet_space_ts(time_series, flatness_param)
 ```
