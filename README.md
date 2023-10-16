@@ -7,6 +7,10 @@ Longer time-series can be transformed into a matrix where each column represents
 ```bash
 pip install shapelet-space
 ```
+## Features
+Shapelet Discovery and Transformation: Extract, identify, and transform time series data using shapelets. </br>
+Dynamic Time Warping: Compute similarity between two sequences varying in time or speed.
+
 ## Paper Link
 https://arxiv.org/pdf/2209.04035.pdf (accepted at IEEE BigData 2022)
 
@@ -15,3 +19,19 @@ https://test.pypi.org/project/shapelet-space/0.1.0/
 
 For Installation
 pip install -i https://test.pypi.org/simple/ shapelet-space==0.1.0
+
+## Usage
+### Shapelet Transformation
+The main component for shapelet transformation is the ShapeletSpace class:
+```python
+from shapelet_space import ShapeletSpace
+
+# Create an instance of the ShapeletSpace class
+shapelet_transformer = ShapeletSpace()
+
+# Define your time series data
+time_series = [/* your time series data here */]
+
+# Generate the shapelet space representation of the time series
+reps = shapelet_transformer.find_shapelet_space_ts(time_series)
+```
