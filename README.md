@@ -23,7 +23,7 @@ pip install shapelet-space
 - **Parameters**:
     - `time_series`: Your input data.
     - `flatness_param`: A threshold used during shapelet discovery.
-Example
+- **Example**:
 ```python
 from shapelet_space import ShapeletSpace
 
