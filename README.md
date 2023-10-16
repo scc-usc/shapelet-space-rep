@@ -39,3 +39,29 @@ flatness_param = 100000  # for example
 # Generate the shapelet space representation of the time series
 reps = shapelet.find_shapelet_space_ts(time_series, flatness_param)
 ```
+### dtw_cons_md
+
+- **Description**: This function computes a similarity matrix between time series sequences using the DTW method.
+- **Usage**:
+    ```python
+    dtw_cons_md(sequence_1, sequence_2, window_size, metric)
+    ```
+- **Parameters**:
+    - `sequence_1` and `sequence_2`: The sequences you wish to compare.
+    - `window_size`: Determines the constraint on how much the sequences can be stretched.
+    - `metric`: The distance metric ('euclidean', 'manhattan', etc.).
+- **Example**:
+```python
+from shapelet_space import dtw
+
+# Prepare your data
+sequence_1 = [/* your first sequence here */]
+sequence_2 = [/* your second sequence here */]
+window_size = 5  # for example
+
+# Calculate the DTW distance
+distance = dtw.dtw_cons_md(sequence_1, sequence_2, window_size, 'euclidean')
+```
+## License
+This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
+
