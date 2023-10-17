@@ -25,10 +25,12 @@ pip install shapelet-space
     - `flatness_param`: A threshold used during shapelet discovery.
 - **Example**:
 ```python
-from shapelet_space import ShapeletSpace
+from shapelet_space import shapelet
 
 # Create an instance of the ShapeletSpace class
-shapelet_transformer = ShapeletSpace()
+shapelet_transformer = shapelet.ShapeletSpace()
+# # To initialize shaplet object with custom params
+# shapelet_transformer = shapelet.ShapeletSpace(Number_of_shapelets, Shapelet_array_length, Shapelet_array)
 
 # Define your time series data
 time_series = [/* your time series data here */]
@@ -37,7 +39,7 @@ time_series = [/* your time series data here */]
 flatness_param = 100000  # for example
 
 # Generate the shapelet space representation of the time series
-reps = shapelet.find_shapelet_space_ts(time_series, flatness_param)
+reps = shapelet_transformer.find_shapelet_space_ts(time_series, flatness_param)
 ```
 ### dtw_cons_md
 
