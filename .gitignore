@@ -3,4 +3,4 @@ __pycache__/
 .pytest_cache/
 .ipynb_checkpoints/
 .DS_Store
-ensemble_example.png
+/ensemble_example.png
