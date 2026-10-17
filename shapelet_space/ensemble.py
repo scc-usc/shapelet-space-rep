@@ -18,6 +18,10 @@ Typical use::
     result.mean_time, result.mean_curve        # consensus in (time, value) form
     result.consensus                           # consensus on the time grid 0..T-1
 
+Uncertainty around the consensus is described by envelopes
+(:func:`find_envelopes`, port of ``find_envelops.m``) and by quantile curves
+derived from them (:func:`envelope_quantiles`).
+
 All time indices in this module are 0-based.
 """
 from dataclasses import dataclass, field
@@ -25,6 +29,7 @@ from typing import Optional
 
 import numpy as np
 from scipy.interpolate import Akima1DInterpolator, PchipInterpolator
+from scipy.spatial import ConvexHull, QhullError
 
 from .dtw import dtw_cons_md, dtw_cons_md_path
 from .shapelet import ShapeletSpace
@@ -265,22 +270,28 @@ def resample_to_grid(mean_time, mean_curve, T, clip_negative=True):
     extrapolation, as in ``DBA_S_alignments.m``. Repeated times keep their
     first occurrence.
     """
-    mean_time = np.asarray(mean_time, dtype=float)
-    mean_curve = np.asarray(mean_curve, dtype=float)
-    uniq_t, first = np.unique(mean_time, return_index=True)
-    uniq_y = mean_curve[first]
-    grid = np.arange(T, dtype=float)
-    if uniq_t.size == 1:
-        curve = np.full(T, uniq_y[0])
-    else:
-        try:
-            interp = Akima1DInterpolator(uniq_t, uniq_y, method='makima', extrapolate=True)
-        except TypeError:  # SciPy < 1.13 has no 'makima' method
-            interp = PchipInterpolator(uniq_t, uniq_y, extrapolate=True)
-        curve = interp(grid)
+    curve = _makima(mean_time, mean_curve, np.arange(T, dtype=float))
     if clip_negative:
         curve = np.where(curve < 0, 0.0, curve)
     return curve
+
+
+def _makima(x, y, grid):
+    """MATLAB ``interp1(x, y, grid, 'makima')`` with extrapolation.
+
+    Repeated ``x`` values keep their first occurrence.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    uniq_x, first = np.unique(x, return_index=True)
+    uniq_y = y[first]
+    if uniq_x.size == 1:
+        return np.full(np.shape(grid), uniq_y[0])
+    try:
+        interp = Akima1DInterpolator(uniq_x, uniq_y, method='makima', extrapolate=True)
+    except TypeError:  # SciPy < 1.13 has no 'makima' method
+        interp = PchipInterpolator(uniq_x, uniq_y, extrapolate=True)
+    return interp(grid)
 
 
 def dba_s_alignments(dd, all_reps=None, shapelet_array=DEFAULT_SHAPELETS, slope_thres=0.0005,
@@ -461,3 +472,458 @@ def dtw_s_ensemble(dd, shapelet_array=DEFAULT_SHAPELETS, slope_thres=None, win=n
                           matches=matches, all_values=all_values, all_times=all_times,
                           reference=reference, reps=all_reps, slope_thres=float(slope_thres),
                           all_refs=all_refs)
+
+
+# ---------------------------------------------------------------------------
+# Envelopes and quantiles (port of find_envelops.m and its helpers)
+# ---------------------------------------------------------------------------
+
+def _matlab_round(x):
+    """MATLAB ``round``: halves are rounded away from zero."""
+    return int(np.floor(x + 0.5)) if x >= 0 else -int(np.floor(-x + 0.5))
+
+
+def calculate_covering_lengths(x_values, y_values, fraction=0.95):
+    """Lengths in x and y that cover ``fraction`` of the points.
+
+    Port of ``calculate_covering_lengths.m``. The points are sorted along
+    each axis and the smallest distance between points that are
+    ``round(fraction * n)`` positions apart is returned. The lengths are used
+    to normalise distances in :func:`convex_hull_degen_confidence`.
+
+    Returns
+    -------
+    x_norm, y_norm : float
+        0 when there are not enough points to measure a covering length.
+    """
+    x_values = np.asarray(x_values, dtype=float).ravel()
+    y_values = np.asarray(y_values, dtype=float).ravel()
+    if x_values.size != y_values.size:
+        raise ValueError('Number of x-values must be equal to the number of y-values.')
+    step = max(_matlab_round(fraction * x_values.size), 1)
+    x_sel = np.sort(x_values)[::step]
+    y_sel = np.sort(y_values)[::step]
+    x_norm = float(np.min(np.diff(x_sel))) if x_sel.size > 1 else 0.0
+    y_norm = float(np.min(np.diff(y_sel))) if y_sel.size > 1 else 0.0
+    return x_norm, y_norm
+
+
+def _hull_vertices(points):
+    """Vertices of the convex hull of ``points``, in order around the hull.
+
+    Degenerate point sets (a line or a single point) give the four extreme
+    points, as in the MATLAB code.
+    """
+    x = points[:, 0]
+    y = points[:, 1]
+    if points.shape[0] >= 3 and np.ptp(x) > 1e-10 and np.ptp(y) > 1e-10:
+        try:
+            return points[ConvexHull(points).vertices]
+        except QhullError:
+            pass
+    idx = [int(np.argmin(x)), int(np.argmin(y)), int(np.argmax(x)), int(np.argmax(y))]
+    return points[idx]
+
+
+def convex_hull_degen_confidence(x2, y2, x_norm, y_norm, centroid_x, centroid_y, confidence):
+    """Convex hull of the points closest to a centroid.
+
+    Port of ``convex_hull_degen_confidence.m``. When ``x_norm`` and
+    ``y_norm`` are positive, the ``round(confidence * n)`` points with the
+    smallest normalised distance to the centroid are kept. Otherwise the
+    ``ceil(confidence * n)`` points closest to the centroid in y and the same
+    number closest in x are kept.
+
+    Parameters
+    ----------
+    x2, y2 : array_like
+        Point coordinates.
+    x_norm, y_norm : float
+        Normalisation lengths. See :func:`calculate_covering_lengths`.
+    centroid_x, centroid_y : float
+    confidence : float
+        Fraction of the points to keep, between 0 and 1.
+
+    Returns
+    -------
+    ndarray, shape (n_vertices, 2)
+        Vertices of the convex hull of the kept points.
+    """
+    if not 0 <= confidence <= 1:
+        raise ValueError('confidence must be between 0 and 1')
+    x2 = np.asarray(x2, dtype=float).ravel()
+    y2 = np.asarray(y2, dtype=float).ravel()
+    points = np.column_stack([x2, y2])
+    n = points.shape[0]
+
+    if x_norm > 0 and y_norm > 0:
+        n_keep = _matlab_round(confidence * n)
+        distances = np.sqrt(((x2 - centroid_x) / x_norm) ** 2 + ((y2 - centroid_y) / y_norm) ** 2)
+        keep = np.sort(np.argsort(distances, kind='stable')[:n_keep])
+    else:
+        n_keep = int(np.ceil(confidence * n))
+        sel = np.zeros(n, dtype=bool)
+        sel[np.argsort(np.abs(centroid_y - y2), kind='stable')[:n_keep]] = True
+        sel[np.argsort(np.abs(centroid_x - x2), kind='stable')[:n_keep]] = True
+        keep = np.flatnonzero(sel)
+    points = points[keep]
+    if points.shape[0] == 0:
+        return points
+    return _hull_vertices(points)
+
+
+def generate_midpoints(points, num_interpolations):
+    """Points spaced along the closed polygon through ``points``.
+
+    Port of ``generateMidpoints.m``. For every edge (including the edge from
+    the last to the first point) ``num_interpolations + 1`` points are
+    produced: the start vertex and ``num_interpolations`` points along the
+    edge. ``points`` may be a 1-D array of one coordinate or a 2-D array of
+    shape ``(n, k)``.
+    """
+    points = np.asarray(points, dtype=float)
+    nxt = np.roll(points, -1, axis=0)
+    t = np.arange(num_interpolations + 1) / (num_interpolations + 1)
+    if points.ndim == 1:
+        out = (1 - t)[None, :] * points[:, None] + t[None, :] * nxt[:, None]
+        return out.ravel()
+    out = (1 - t)[None, :, None] * points[:, None, :] + t[None, :, None] * nxt[:, None, :]
+    return out.reshape(-1, points.shape[1])
+
+
+def is_intersect_with_sides(p1, p2, points, min_idx, max_idx, direction):
+    """Whether the segment ``p2 -> p1`` cuts through the profile ``points``.
+
+    Port of ``isIntersectWithSides.m``. The profile points with index in
+    ``min_idx + 1 .. max_idx`` and x strictly between ``p2[0]`` and
+    ``p1[0]`` are tested. For ``direction='max'`` a point above the segment
+    is an intersection, for ``direction='min'`` a point below it.
+    """
+    slope = (p2[1] - p1[1]) / (p2[0] - p1[0])
+    intercept = p1[1] - p1[0] * slope
+    for i in range(min_idx + 1, max_idx + 1):
+        px, py = points[i, 0], points[i, 1]
+        if px >= p1[0]:
+            break
+        if px <= p2[0]:
+            continue
+        line = px * slope + intercept
+        if direction == 'max' and py > line:
+            return True
+        if direction == 'min' and py < line:
+            return True
+    return False
+
+
+def _thin_profile(vertices_sorted, interval, direction):
+    """Keep one point per x-interval: the lowest ('min') or highest ('max')."""
+    xs = vertices_sorted[:, 0]
+    ys = vertices_sorted[:, 1]
+    n = xs.size
+    pick = np.argmin if direction == 'min' else np.argmax
+    out = []
+    i = 0
+    while i < n:
+        j = i
+        while j < n and xs[j] < xs[i] + interval:
+            j += 1
+        out.append(vertices_sorted[i + int(pick(ys[i:j]))])
+        i = j
+    return np.array(out)
+
+
+def _trace_boundary(profile, window, direction):
+    """Greedy piecewise-linear boundary along a thinned profile.
+
+    Starting from the first profile point, every step moves to the farthest
+    point within ``window`` in x that can be reached without cutting through
+    the profile (see :func:`is_intersect_with_sides`).
+    """
+    xs = profile[:, 0]
+    ys = profile[:, 1]
+    n = xs.size
+    bx = [xs[0]]
+    by = [ys[0]]
+    if n == 1:
+        return np.array(bx), np.array(by)
+    idx = 1
+    last_idx = 0
+    sel = 0
+    interval_end = xs[0] + window
+    while idx < n:
+        while xs[idx] < interval_end:
+            if not is_intersect_with_sides(profile[idx], (bx[-1], by[-1]), profile, last_idx, idx, direction):
+                sel = idx
+            idx += 1
+            if idx >= n:
+                break
+        bx.append(xs[sel])
+        by.append(ys[sel])
+        if idx >= n:
+            break
+        last_idx = idx
+        interval_end = xs[idx] + window
+    return np.array(bx), np.array(by)
+
+
+def _envelope_curve(all_vertices_sorted, T, direction, method, thin_interval, window, strict_step):
+    profile = _thin_profile(all_vertices_sorted, thin_interval, direction)
+    bx, by = _trace_boundary(profile, window, direction)
+    xq = np.arange(T, dtype=float)
+    vq = _makima(bx, by, xq)
+
+    if method == 'strict':
+        sign = -1.0 if direction == 'min' else 1.0
+        for i in range(T - 1):
+            while is_intersect_with_sides((xq[i + 1], vq[i + 1]), (xq[i], vq[i]), profile, 0,
+                                          profile.shape[0] - 1, direction):
+                vq[i + 1] += sign * strict_step
+                vq[i] += sign * strict_step
+    elif method == 'combo':
+        xq = np.concatenate([xq, bx])
+        vq = np.concatenate([vq, by])
+        order = np.argsort(xq, kind='stable')
+        xq = xq[order]
+        vq = vq[order]
+    elif method != 'none':
+        raise ValueError("method must be 'none', 'strict' or 'combo'")
+    return xq, vq, profile
+
+
+@dataclass
+class EnvelopeResult:
+    """Output of :func:`find_envelopes`."""
+    #: Confidence level of the envelope.
+    confidence: float
+    #: Time of every point of the lower envelope.
+    lower_time: np.ndarray
+    #: Value of every point of the lower envelope.
+    lower: np.ndarray
+    #: Time of every point of the upper envelope.
+    upper_time: np.ndarray
+    #: Value of every point of the upper envelope.
+    upper: np.ndarray
+    #: Convex hull vertices of every event, shape (n_vertices, 2) each.
+    hulls: list = field(default_factory=list)
+
+
+def find_envelopes(dd, dtw_matches, confidence=0.95, method='none', poly_method='', jitter=0.1,
+                   num_interpolations=50, thin_interval=0.025, window=2.0, strict_step=1.0,
+                   seed=None):
+    """Lower and upper envelopes of the matched points around the consensus.
+
+    Port of ``find_envelops.m``. For every event (time step of the reference)
+    the matched points ``(time, value)`` of all series are jittered, the
+    points farthest from the consensus point are dropped so that a fraction
+    ``confidence`` remains, and the convex hull of the rest is taken. The
+    lower (upper) envelope follows the bottom (top) of the union of these
+    hulls and is interpolated on the time grid ``0 .. T-1``.
+
+    Parameters
+    ----------
+    dd : array_like, shape (n_series, T)
+    dtw_matches : array_like of int, shape (n_series, T)
+        Output of :func:`find_dtw_matchings` (or ``EnsembleResult.matches``).
+    confidence : float, optional
+        Fraction of the matched points of every event kept inside the hull.
+        Default 0.95.
+    method : {'none', 'strict', 'combo'}, optional
+        ``'none'`` returns the interpolated envelope on the time grid.
+        ``'strict'`` shifts grid segments outward in steps of ``strict_step``
+        until no hull point lies outside. ``'combo'`` merges the grid points
+        with the boundary points (the time arrays are then not the grid).
+    poly_method : str, optional
+        A value containing ``'2d'`` selects the points per axis instead of
+        by normalised distance. See :func:`convex_hull_degen_confidence`.
+    jitter : float, optional
+        Relative random jitter applied to the points before the hull is
+        taken (MATLAB uses 0.1). Times are jittered as 1-based values, as in
+        MATLAB. Use 0 to disable.
+    num_interpolations : int, optional
+        Points generated along every hull edge. Default 50.
+    thin_interval : float, optional
+        Width (in time units) of the bins that thin the hull points. Default 0.025.
+    window : float, optional
+        Look-ahead (in time units) when tracing the boundary. Default 2.
+    strict_step : float, optional
+        Shift (in value units) used by ``method='strict'``. Default 1.
+    seed : int or numpy.random.Generator, optional
+        Seed for the jitter.
+
+    Returns
+    -------
+    EnvelopeResult
+    """
+    dd = _as_2d_float(dd)
+    T = dd.shape[1]
+    rng = np.random.default_rng(seed)
+    mean_curve, mean_time, all_values, all_times = dtw_mean_ensemble(dd, dtw_matches)
+
+    hulls = []
+    borders = []
+    for mm in range(all_times.shape[1]):
+        x1 = all_times[:, mm]
+        y1 = all_values[:, mm]
+        good = ~(np.isnan(x1) | np.isnan(y1))
+        x1 = x1[good]
+        y1 = y1[good]
+        if x1.size == 0:
+            continue
+        if jitter:
+            # MATLAB jitters 1-based times: x .* (1 + jitter * rand).
+            x1 = (x1 + 1) * (1 + jitter * rng.random(x1.size)) - 1
+            y1 = y1 * (1 + jitter * rng.random(y1.size))
+        if '2d' in poly_method:
+            x_norm = y_norm = 0.0
+        else:
+            x_norm, y_norm = calculate_covering_lengths(x1, y1)
+        k = convex_hull_degen_confidence(x1, y1, x_norm, y_norm, mean_time[mm], mean_curve[mm], confidence)
+        if k.shape[0] == 0:
+            continue
+        hulls.append(k)
+        borders.append(generate_midpoints(k, num_interpolations))
+
+    all_vertices = np.vstack(borders)
+    all_vertices = all_vertices[np.argsort(all_vertices[:, 0], kind='stable')]
+
+    lo_x, lo_y, _ = _envelope_curve(all_vertices, T, 'min', method, thin_interval, window, strict_step)
+    hi_x, hi_y, _ = _envelope_curve(all_vertices, T, 'max', method, thin_interval, window, strict_step)
+    return EnvelopeResult(confidence=float(confidence), lower_time=lo_x, lower=lo_y,
+                          upper_time=hi_x, upper=hi_y, hulls=hulls)
+
+
+def envelope_quantiles(dd, dtw_matches, quantiles=(0.025, 0.25, 0.5, 0.75, 0.975), method='strict',
+                       poly_method='dense', median=None, clip_negative=False, seed=None, **kwargs):
+    """Quantile curves of the ensemble on the time grid ``0 .. T-1``.
+
+    This is the quantile computation of ``get_DBAS_ensemble.m``. A quantile
+    ``q`` below 0.5 is the lower envelope at confidence ``1 - 2q``, a
+    quantile above 0.5 the upper envelope at confidence ``2q - 1``, and
+    ``q = 0.5`` is the DTW+S consensus. The envelopes come from
+    :func:`find_envelopes`; extra keyword arguments are passed to it. Every
+    envelope uses the same jitter.
+
+    The envelopes are built independently for every confidence level, so the
+    quantile curves are not guaranteed to be nested everywhere. Small
+    crossings can occur, mostly at the first and last time steps.
+
+    Parameters
+    ----------
+    dd : array_like, shape (n_series, T)
+    dtw_matches : array_like of int, shape (n_series, T)
+    quantiles : sequence of float, optional
+        Quantile levels between 0 and 1.
+    method : {'none', 'strict', 'combo'}, optional
+        Envelope method. Default ``'strict'`` as in the MATLAB code. With
+        ``'combo'`` the envelope is interpolated back on the grid.
+    poly_method : str, optional
+        Point selection of the hulls. Default ``'dense'`` as in the MATLAB
+        code. See :func:`find_envelopes`.
+    median : array_like, shape (T,), optional
+        Curve used for ``q = 0.5``. Default: the mean of the matched points
+        resampled on the grid (this equals the final DBA reference).
+    clip_negative : bool, optional
+        Clip the curves at 0. Default False, as in the MATLAB code.
+    seed : int, optional
+        Seed for the jitter.
+
+    Returns
+    -------
+    ndarray, shape (len(quantiles), T)
+    """
+    dd = _as_2d_float(dd)
+    T = dd.shape[1]
+    grid = np.arange(T, dtype=float)
+    quantiles = np.asarray(quantiles, dtype=float)
+    if np.any((quantiles < 0) | (quantiles > 1)):
+        raise ValueError('quantiles must be between 0 and 1')
+    seed = np.random.SeedSequence().entropy if seed is None else seed
+
+    out = np.empty((quantiles.size, T))
+    cache = {}
+    for i, q in enumerate(quantiles):
+        if np.isclose(q, 0.5):
+            if median is not None:
+                out[i] = np.asarray(median, dtype=float)
+            else:
+                mean_curve, mean_time, _, _ = dtw_mean_ensemble(dd, dtw_matches)
+                out[i] = resample_to_grid(mean_time, mean_curve, T)
+            continue
+        conf = abs(2 * q - 1)
+        if conf not in cache:
+            cache[conf] = find_envelopes(dd, dtw_matches, conf, method=method, poly_method=poly_method,
+                                         seed=seed, **kwargs)
+        env = cache[conf]
+        if q < 0.5:
+            x, y = env.lower_time, env.lower
+        else:
+            x, y = env.upper_time, env.upper
+        out[i] = y if (x.size == T and np.array_equal(x, grid)) else np.interp(grid, x, y)
+    if clip_negative:
+        out = np.where(out < 0, 0.0, out)
+    return out
+
+
+def quantile_levels(qq):
+    """Quantile levels of the rows of :func:`get_dbas_ensemble`.
+
+    ``qq`` lists the lower quantiles. The result is ``qq``, then 0.5, then
+    the mirrored upper quantiles ``1 - qq`` in reverse order.
+    """
+    qq = np.sort(np.asarray(qq, dtype=float).ravel())
+    if qq.size and (qq[0] < 0 or qq[-1] >= 0.5):
+        raise ValueError('qq must contain lower quantiles in [0, 0.5)')
+    return np.concatenate([qq, [0.5], 1 - qq[::-1]])
+
+
+def get_dbas_ensemble(dd, qq=(0.025, 0.25), win=10, shapelet_array=DEFAULT_SHAPELETS, slope_thres=None,
+                      num_iter=None, seed=None, return_result=False):
+    """Quantiles of a set of time series with the DBA+S ensemble.
+
+    Port of ``get_DBAS_ensemble.m``. The series are aligned with
+    :func:`dba_s_alignments` (medoid start, ``win`` iterations by default)
+    and the quantiles are read from the envelopes of the matched points
+    (:func:`envelope_quantiles` with ``method='strict'`` and
+    ``poly_method='dense'``). The median row is the final DBA reference.
+
+    Parameters
+    ----------
+    dd : array_like, shape (n_series, T)
+        One time series per row.
+    qq : sequence of float, optional
+        Lower quantiles in ``[0, 0.5)``. The upper quantiles are added by
+        symmetry and 0.5 is always included. ``(0.05, 0.1, 0.25)`` gives the
+        rows ``0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95``.
+    win : float, optional
+        DTW window. Default 10.
+    shapelet_array : array_like, optional
+        Shapelets. Default :data:`DEFAULT_SHAPELETS`.
+    slope_thres : float, optional
+        Slope threshold. Estimated from the data when omitted.
+    num_iter : int, optional
+        DBA iterations. Default: ``win`` (as in the MATLAB code), or 10 when
+        ``win`` is not finite.
+    seed : int, optional
+        Seed for the jitter of the envelopes.
+    return_result : bool, optional
+        Also return the :class:`EnsembleResult` of the alignment.
+
+    Returns
+    -------
+    Q : ndarray, shape (2 * len(qq) + 1, T)
+        One quantile curve per row, from the lowest to the highest quantile.
+        See :func:`quantile_levels` for the level of every row.
+    result : EnsembleResult
+        Only when ``return_result`` is True.
+    """
+    dd = _as_2d_float(dd)
+    levels = quantile_levels(qq)
+    if num_iter is None:
+        num_iter = int(win) if np.isfinite(win) else 10
+    result = dtw_s_ensemble(dd, shapelet_array=shapelet_array, slope_thres=slope_thres, win=win,
+                            dist_metric='euc', num_iter=num_iter)
+    Q = envelope_quantiles(dd, result.matches, levels, method='strict', poly_method='dense',
+                           median=result.reference, seed=seed)
+    if return_result:
+        return Q, result
+    return Q

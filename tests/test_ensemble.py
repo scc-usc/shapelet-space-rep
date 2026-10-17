@@ -168,3 +168,118 @@ class TestEnsemble:
         # than the point-wise mean is.
         median_peak = np.median(dd.max(axis=1))
         assert abs(res.consensus.max() - median_peak) < abs(dd.mean(axis=0).max() - median_peak)
+
+
+class TestEnvelopes:
+    def test_covering_lengths(self):
+        x = np.arange(100, dtype=float)
+        y = 2 * x
+        x_norm, y_norm = ensemble.calculate_covering_lengths(x, y)
+        assert x_norm == pytest.approx(95)
+        assert y_norm == pytest.approx(190)
+        assert ensemble.calculate_covering_lengths([1.0, 2.0], [1.0, 2.0]) == (0.0, 0.0)
+        with pytest.raises(ValueError):
+            ensemble.calculate_covering_lengths([1.0, 2.0], [1.0])
+
+    def test_convex_hull_degen_confidence_keeps_closest_points(self):
+        rng = np.random.default_rng(0)
+        pts = rng.normal(size=(200, 2))
+        far = np.array([[50.0, 50.0], [-50.0, -50.0]])
+        x = np.concatenate([pts[:, 0], far[:, 0]])
+        y = np.concatenate([pts[:, 1], far[:, 1]])
+        hull = ensemble.convex_hull_degen_confidence(x, y, 1.0, 1.0, 0.0, 0.0, 0.9)
+        assert hull.shape[1] == 2
+        assert np.abs(hull).max() < 10  # the far points were dropped
+        # Full confidence keeps every point, so the far points are vertices.
+        hull_all = ensemble.convex_hull_degen_confidence(x, y, 1.0, 1.0, 0.0, 0.0, 1.0)
+        assert np.abs(hull_all).max() == 50
+        # 2-D selection (x_norm = 0) also returns a hull.
+        hull_2d = ensemble.convex_hull_degen_confidence(x, y, 0.0, 0.0, 0.0, 0.0, 0.5)
+        assert hull_2d.shape[1] == 2
+
+    def test_convex_hull_degenerate_points(self):
+        x = np.array([0.0, 1.0, 2.0, 3.0])
+        y = np.zeros(4)
+        hull = ensemble.convex_hull_degen_confidence(x, y, 1.0, 1.0, 1.5, 0.0, 1.0)
+        assert hull.shape == (4, 2)
+
+    def test_generate_midpoints(self):
+        pts = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]])
+        border = ensemble.generate_midpoints(pts, 3)
+        assert border.shape == (12, 2)
+        np.testing.assert_allclose(border[:4], [[0, 0], [0.25, 0], [0.5, 0], [0.75, 0]])
+        # The closing edge from the last to the first vertex is included.
+        np.testing.assert_allclose(border[8], [1, 1])
+        np.testing.assert_allclose(border[11], [0.25, 0.25])
+        np.testing.assert_allclose(ensemble.generate_midpoints(np.array([0.0, 2.0]), 1), [0, 1, 2, 1])
+
+    def test_is_intersect_with_sides(self):
+        profile = np.array([[0.0, 0.0], [1.0, -1.0], [2.0, 5.0], [3.0, 0.0]])
+        p2 = (0.0, 0.0)
+        p1 = (3.0, 0.0)
+        assert ensemble.is_intersect_with_sides(p1, p2, profile, 0, 3, 'min')
+        assert ensemble.is_intersect_with_sides(p1, p2, profile, 0, 3, 'max')
+        flat = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]])
+        assert not ensemble.is_intersect_with_sides(p1, p2, flat, 0, 3, 'min')
+        assert not ensemble.is_intersect_with_sides(p1, p2, flat, 0, 3, 'max')
+
+    def test_envelopes_bracket_the_series(self):
+        dd = shifted_bumps()
+        res = ensemble.dtw_s_ensemble(dd)
+        for method in ('none', 'strict'):
+            env = ensemble.find_envelopes(dd, res.matches, 1.0, method=method, jitter=0.0)
+            assert env.lower.shape == (dd.shape[1],)
+            np.testing.assert_array_equal(env.lower_time, np.arange(dd.shape[1]))
+            assert np.all(env.upper >= env.lower - 1e-9)
+            # Without jitter and at full confidence the band covers the consensus.
+            inner = slice(2, -2)
+            assert np.all(env.upper[inner] >= res.consensus[inner] - 1e-6)
+            assert np.all(env.lower[inner] <= res.consensus[inner] + 1e-6)
+        combo = ensemble.find_envelopes(dd, res.matches, 0.9, method='combo', seed=0)
+        assert combo.lower_time.size >= dd.shape[1]
+        assert np.all(np.diff(combo.lower_time) >= 0)
+        with pytest.raises(ValueError):
+            ensemble.find_envelopes(dd, res.matches, 0.9, method='bogus')
+
+    def test_wider_band_for_higher_confidence(self):
+        dd = np.loadtxt(DATA, delimiter=',')
+        res = ensemble.dtw_s_ensemble(dd, win=10, num_iter=5)
+        env50 = ensemble.find_envelopes(dd, res.matches, 0.5, seed=1)
+        env95 = ensemble.find_envelopes(dd, res.matches, 0.95, seed=1)
+        assert np.mean(env95.upper - env95.lower) > np.mean(env50.upper - env50.lower)
+        assert env95.upper.max() > res.consensus.max()
+        assert len(env95.hulls) == dd.shape[1]
+
+    def test_envelope_quantiles(self):
+        dd = np.loadtxt(DATA, delimiter=',')
+        res = ensemble.dtw_s_ensemble(dd, win=10, num_iter=5)
+        qs = (0.025, 0.25, 0.5, 0.75, 0.975)
+        Q = ensemble.envelope_quantiles(dd, res.matches, qs, seed=0)
+        assert Q.shape == (5, dd.shape[1])
+        np.testing.assert_allclose(Q[2], res.consensus)
+        inner = slice(2, -2)
+        assert np.all(Q[4][inner] >= Q[3][inner])
+        assert np.all(Q[3][inner] >= Q[2][inner])
+        assert np.all(Q[2][inner] >= Q[1][inner])
+        Q2 = ensemble.envelope_quantiles(dd, res.matches, qs, seed=0)
+        np.testing.assert_array_equal(Q, Q2)  # the seed makes the result repeatable
+        Qc = ensemble.envelope_quantiles(dd, res.matches, qs, method='combo', seed=0)
+        assert Qc.shape == Q.shape
+        with pytest.raises(ValueError):
+            ensemble.envelope_quantiles(dd, res.matches, (1.5,))
+
+    def test_get_dbas_ensemble(self):
+        dd = np.loadtxt(DATA, delimiter=',')
+        np.testing.assert_allclose(ensemble.quantile_levels((0.05, 0.1, 0.25)),
+                                   [0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95])
+        with pytest.raises(ValueError):
+            ensemble.quantile_levels((0.6,))
+        Q, res = ensemble.get_dbas_ensemble(dd, (0.05, 0.25), win=10, seed=0, return_result=True)
+        assert Q.shape == (5, dd.shape[1])
+        np.testing.assert_allclose(Q[2], res.reference)
+        assert res.all_refs.shape[0] <= 11
+        # The median keeps the peak and the 95% band is wide around it.
+        assert Q[2].max() > 1.3 * dd.mean(axis=0).max()
+        assert Q[4].max() > Q[2].max() > Q[0].max()
+        Q_only = ensemble.get_dbas_ensemble(dd, (0.05, 0.25), win=10, seed=0)
+        np.testing.assert_allclose(Q_only, Q)

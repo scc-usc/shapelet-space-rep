@@ -75,7 +75,7 @@ distance = dtw.dtw_cons_md(sequence_1, sequence_2, window_size, 'euclidean')
 
 ## Ensemble (consensus of several time series)
 
-The `ensemble` module finds the consensus of a set of time series with DTW+S. It is a Python port of the MATLAB code in [DTW_S_apps/ensemble](https://github.com/scc-usc/DTW_S_apps/tree/main/ensemble).
+The `ensemble` module finds the consensus of a set of time series with DTW+S, and quantiles around it. It is a Python port of the MATLAB code in [DTW_S_apps/ensemble](https://github.com/scc-usc/DTW_S_apps/tree/main/ensemble) and of `get_DBAS_ensemble.m` with its envelope helpers.
 A point-wise mean of unaligned series flattens and widens the peaks. The DTW+S consensus first aligns the series in shapelet space and then averages the matched points, so the shape of the individual series is kept.
 
 ### dtw_s_ensemble
@@ -122,6 +122,44 @@ plt.plot(result.mean_time, result.mean_curve, 'k', label='DTW+S DBA')
 plt.legend()
 ```
 See `examples/ensemble_example.py` for a complete script.
+
+### get_dbas_ensemble (quantiles)
+
+- **Description**: Quantiles of a set of time series with the DBA+S ensemble. Port of `get_DBAS_ensemble.m`. The series are aligned with DTW Barycenter Averaging in shapelet space. For every event (time step of the reference) the matched points of all series form a cloud. The points farthest from the consensus are dropped so that a fraction `1 - 2q` remains, the convex hull of the rest is taken, and the lower and upper envelopes of the union of the hulls give the quantiles `q` and `1 - q`. The median is the final DBA reference.
+- **Usage**:
+    ```python
+    get_dbas_ensemble(dd, qq=(0.025, 0.25), win=10)
+    ```
+- **Parameters**:
+    - `dd`: array of shape `(n_series, T)`.
+    - `qq`: lower quantiles in `[0, 0.5)`. The upper quantiles are added by symmetry and 0.5 is always included. `(0.05, 0.1, 0.25)` gives the rows `0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95`.
+    - `win`: DTW window (default 10). The number of DBA iterations is `win` by default, as in the MATLAB code.
+    - `seed`: seed of the random jitter used by the envelopes. Set it for repeatable results.
+    - `return_result=True` also returns the `EnsembleResult` of the alignment.
+- **Returns**: array of shape `(2 * len(qq) + 1, T)`, one quantile curve per row from the lowest to the highest quantile. `quantile_levels(qq)` gives the level of every row.
+- **Example**:
+```python
+import numpy as np
+from shapelet_space import ensemble
+
+dd = np.loadtxt('data/flu_sims.csv', delimiter=',')
+Q = ensemble.get_dbas_ensemble(dd, qq=(0.025, 0.25), win=10, seed=0)
+levels = ensemble.quantile_levels((0.025, 0.25))     # [0.025, 0.25, 0.5, 0.75, 0.975]
+
+import matplotlib.pyplot as plt
+plt.plot(dd.T, color='b', alpha=0.1)
+plt.fill_between(np.arange(dd.shape[1]), Q[0], Q[4], color='r', alpha=0.2, label='95%')
+plt.fill_between(np.arange(dd.shape[1]), Q[1], Q[3], color='r', alpha=0.4, label='50%')
+plt.plot(Q[2], 'k', label='median')
+plt.legend()
+```
+The envelopes are built independently for every confidence level, so the quantile curves are not guaranteed to be nested at every time step. Small crossings can occur at the first and last time steps.
+
+### Envelopes
+
+- `find_envelopes(dd, dtw_matches, confidence=0.95, method='none', poly_method='', jitter=0.1, seed=None)`: lower and upper envelopes of the matched points at one confidence level. Port of `find_envelops.m`. Returns an `EnvelopeResult` with `lower_time`, `lower`, `upper_time`, `upper`, and the convex hull of every event in `hulls`. `method` is `'none'` (interpolated envelope), `'strict'` (grid segments pushed outward until no hull point lies outside) or `'combo'` (grid points merged with the boundary points). A `poly_method` containing `'2d'` selects points per axis instead of by normalised distance.
+- `envelope_quantiles(dd, dtw_matches, quantiles, method='strict', poly_method='dense', seed=None)`: quantile curves on the time grid from the envelopes, for any alignment (for example `result.matches` of `dtw_s_ensemble`).
+- `calculate_covering_lengths`, `convex_hull_degen_confidence`, `generate_midpoints`, `is_intersect_with_sides`: ports of the MATLAB helpers with the same names.
 
 ### Lower-level functions
 
